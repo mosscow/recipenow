@@ -1,65 +1,104 @@
-import Image from "next/image";
+import { prisma } from "@/lib/prisma";
+import Link from "next/link";
 
-export default function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; tag?: string }>;
+}) {
+  const { q, tag } = await searchParams;
+
+  const recipes = await prisma.recipe.findMany({
+    where: {
+      AND: [
+        q ? { title: { contains: q } } : {},
+        tag ? { tags: { some: { tag: { name: tag } } } } : {},
+      ],
+    },
+    include: { tags: { include: { tag: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const allTags = await prisma.tag.findMany({ orderBy: { name: "asc" } });
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div>
+      <div className="flex flex-col sm:flex-row gap-4 mb-8">
+        <form className="flex-1 flex gap-2">
+          <input
+            name="q"
+            defaultValue={q}
+            placeholder="Search recipes..."
+            className="flex-1 border border-amber-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+          />
+          {tag && <input type="hidden" name="tag" value={tag} />}
+          <button type="submit" className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-amber-700 transition-colors">
+            Search
+          </button>
+        </form>
+      </div>
+
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-8">
+          <Link
+            href="/"
+            className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+              !tag ? "bg-amber-600 text-white" : "bg-white text-amber-700 border border-amber-300 hover:bg-amber-50"
+            }`}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            All
+          </Link>
+          {allTags.map((t) => (
+            <Link
+              key={t.id}
+              href={`/?tag=${encodeURIComponent(t.name)}${q ? `&q=${q}` : ""}`}
+              className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                tag === t.name ? "bg-amber-600 text-white" : "bg-white text-amber-700 border border-amber-300 hover:bg-amber-50"
+              }`}
+            >
+              {t.name}
+            </Link>
+          ))}
         </div>
-      </main>
+      )}
+
+      {recipes.length === 0 ? (
+        <div className="text-center py-20 text-amber-800/50">
+          <p className="text-lg">No recipes yet.</p>
+          <Link href="/recipes/new" className="text-amber-600 underline mt-2 inline-block">
+            Add your first recipe
+          </Link>
+        </div>
+      ) : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {recipes.map((recipe) => (
+            <Link
+              key={recipe.id}
+              href={`/recipes/${recipe.id}`}
+              className="bg-white rounded-xl border border-amber-100 p-5 hover:shadow-md transition-shadow"
+            >
+              <h2 className="font-semibold text-amber-900 text-lg leading-tight mb-2">
+                {recipe.title}
+              </h2>
+              {recipe.description && (
+                <p className="text-sm text-zinc-600 line-clamp-2 mb-3">{recipe.description}</p>
+              )}
+              <div className="flex flex-wrap gap-1 mb-3">
+                {recipe.tags.map(({ tag }) => (
+                  <span key={tag.id} className="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full">
+                    {tag.name}
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-4 text-xs text-zinc-400">
+                {recipe.prepTime && <span>Prep: {recipe.prepTime}m</span>}
+                {recipe.cookTime && <span>Cook: {recipe.cookTime}m</span>}
+                {recipe.servings && <span>Serves: {recipe.servings}</span>}
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
