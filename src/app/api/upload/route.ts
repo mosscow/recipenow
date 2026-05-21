@@ -1,54 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
+import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@/lib/prisma";
 
-function parseDocxText(text: string, filename: string) {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+const anthropic = new Anthropic();
 
-  let title = filename.replace(/\.docx$/i, "").replace(/_/g, " ");
-  let description = "";
-  const ingredientLines: string[] = [];
-  const instructionLines: string[] = [];
-  const tags: string[] = [];
+async function extractRecipeWithClaude(text: string, filename: string) {
+  const response = await anthropic.messages.create({
+    model: "claude-opus-4-7",
+    max_tokens: 2048,
+    messages: [
+      {
+        role: "user",
+        content: `Extract this recipe and return ONLY a JSON object. Each ingredient must be on its own line. Each instruction step must be on its own line (no sub-steps combined). Auto-generate relevant tags.
 
-  let section: "none" | "ingredients" | "instructions" = "none";
+Return this exact shape:
+{
+  "title": "recipe title",
+  "description": "one sentence describing the dish",
+  "prepTime": 15,
+  "cookTime": 30,
+  "servings": 4,
+  "ingredients": "200g flour\n2 eggs\n1 cup milk",
+  "instructions": "Mix dry ingredients together.\nWhisk eggs and milk separately.\nCombine and stir until smooth.",
+  "tags": ["dinner", "italian", "pasta"]
+}
 
-  for (const line of lines) {
-    const lower = line.toLowerCase();
+Rules:
+- prepTime, cookTime, servings are integers or null if not mentioned
+- Each ingredient is its own line — quantities included, no bullets or numbers
+- Each instruction is a single complete step on its own line — no numbering
+- tags: 3–6 lowercase keywords (meal type, cuisine, main ingredient, dietary info, cooking method)
+- If description isn't in the text, write one from context
 
-    if (/^(recipe\s*name|title)\s*[:\-]?\s*/i.test(line)) {
-      title = line.replace(/^(recipe\s*name|title)\s*[:\-]?\s*/i, "").trim() || title;
-      continue;
-    }
-    if (/^(description|about|overview)\s*[:\-]?\s*/i.test(line)) {
-      description = line.replace(/^(description|about|overview)\s*[:\-]?\s*/i, "").trim();
-      continue;
-    }
+Filename: ${filename}
 
-    if (/^ingredients?$/i.test(lower)) { section = "ingredients"; continue; }
-    if (/^(instructions?|method|directions?|steps?|preparation)$/i.test(lower)) { section = "instructions"; continue; }
+Recipe text:
+${text}`,
+      },
+    ],
+  });
 
-    if (section === "ingredients") {
-      ingredientLines.push(line.replace(/^[-•*]\s*/, ""));
-    } else if (section === "instructions") {
-      instructionLines.push(line.replace(/^\d+[.)]\s*/, ""));
-    } else if (section === "none" && !title) {
-      title = line;
-    }
-  }
-
-  if (ingredientLines.length === 0 && instructionLines.length === 0) {
-    const half = Math.floor(lines.length / 2);
-    ingredientLines.push(...lines.slice(0, half));
-    instructionLines.push(...lines.slice(half));
-  }
-
-  return {
-    title,
-    description: description || undefined,
-    ingredients: ingredientLines.join("\n"),
-    instructions: instructionLines.join("\n"),
-    tags,
+  const raw = response.content[0].type === "text" ? response.content[0].text : "";
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON in Claude response");
+  return JSON.parse(match[0]) as {
+    title: string;
+    description: string;
+    prepTime: number | null;
+    cookTime: number | null;
+    servings: number | null;
+    ingredients: string;
+    instructions: string;
+    tags: string[];
   };
 }
 
@@ -61,36 +65,44 @@ export async function POST(req: NextRequest) {
   }
 
   let count = 0;
+  const errors: string[] = [];
+
   for (const file of files) {
     if (!file.name.endsWith(".docx")) continue;
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await mammoth.extractRawText({ buffer });
-    const parsed = parseDocxText(result.value, file.name);
+    try {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const { value: text } = await mammoth.extractRawText({ buffer });
+      const parsed = await extractRecipeWithClaude(text, file.name);
 
-    const tagNames = parsed.tags;
-    await prisma.recipe.create({
-      data: {
-        title: parsed.title,
-        description: parsed.description,
-        ingredients: parsed.ingredients || "See document",
-        instructions: parsed.instructions || "See document",
-        tags: {
-          create: await Promise.all(
-            tagNames.map(async (name) => {
-              const tag = await prisma.tag.upsert({
-                where: { name },
-                update: {},
-                create: { name },
-              });
-              return { tagId: tag.id };
-            })
-          ),
+      await prisma.recipe.create({
+        data: {
+          title: parsed.title,
+          description: parsed.description || undefined,
+          prepTime: parsed.prepTime,
+          cookTime: parsed.cookTime,
+          servings: parsed.servings,
+          ingredients: parsed.ingredients,
+          instructions: parsed.instructions,
+          tags: {
+            create: await Promise.all(
+              parsed.tags.map(async (name) => {
+                const tag = await prisma.tag.upsert({
+                  where: { name },
+                  update: {},
+                  create: { name },
+                });
+                return { tagId: tag.id };
+              })
+            ),
+          },
         },
-      },
-    });
-    count++;
+      });
+      count++;
+    } catch (e) {
+      errors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
-  return NextResponse.json({ count });
+  return NextResponse.json({ count, errors });
 }
