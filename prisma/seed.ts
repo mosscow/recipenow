@@ -1,12 +1,12 @@
 import { PrismaClient } from "../src/generated/prisma/client";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaNeon } from "@prisma/adapter-neon";
 import Anthropic from "@anthropic-ai/sdk";
 import mammoth from "mammoth";
 import path from "path";
 import fs from "fs";
+import "dotenv/config";
 
-const dbPath = path.resolve("dev.db");
-const adapter = new PrismaBetterSqlite3({ url: `file:${dbPath}` });
+const adapter = new PrismaNeon({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter } as never);
 const anthropic = new Anthropic();
 
